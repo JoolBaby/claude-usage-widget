@@ -62,9 +62,11 @@ jobs:
         run: |
           $env:CLAUDE_USAGE_SELFTEST = "1"
           $p = Start-Process dist/windows/ClaudeUsage-Windows.exe -PassThru
-          Start-Sleep -Seconds 20
+          Start-Sleep -Seconds 40
           $log = Join-Path $env:LOCALAPPDATA "ClaudeUsage\errors.log"
           if (Test-Path $log) { Get-Content $log }
+          $selftest = Join-Path $env:LOCALAPPDATA "ClaudeUsage\selftest.log"
+          if (Test-Path $selftest) { Get-Content $selftest } else { Write-Host "(no self-test result written)" }
           if ($p.HasExited) {
             Write-Host "The app quit or crashed right after starting (exit code $($p.ExitCode))."
             exit 1
