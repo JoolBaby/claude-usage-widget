@@ -1,0 +1,55 @@
+name: Build and release
+
+# Every push to main is built and tested on a real Mac.
+# If the version in the VERSION file hasn't been released yet, it is published as a
+# GitHub release, and every installed widget picks it up within about 12 hours.
+# If the build or the launch test fails, nothing is released.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the app
+        run: ./build.sh "$(tr -d '[:space:]' < VERSION)" "$GITHUB_RUN_NUMBER"
+
+      - name: Check that the app starts and keeps running
+        run: |
+          "dist/Claude Usage.app/Contents/MacOS/ClaudeUsage" &
+          PID=$!
+          sleep 10
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "The app quit or crashed right after starting."
+            exit 1
+          fi
+          kill "$PID" || true
+          echo "The app started and kept running."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeUsage
+          path: dist/ClaudeUsage.zip
+
+      - name: Publish the release (only for a new version on main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION is already released; nothing to publish."
+          else
+            gh release create "v$VERSION" dist/ClaudeUsage.zip \
+              --title "Claude Usage $VERSION" \
+              --notes "$(git log -1 --pretty=%B)"
+          fi
