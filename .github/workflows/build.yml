@@ -1,13 +1,12 @@
 name: Build and release
 
-# Every push to main is built and tested on a real Mac.
-# If the version in the VERSION file hasn't been released yet, it is published as a
-# GitHub release, and every installed widget picks it up within about 12 hours.
-# If the build or the launch test fails, nothing is released.
+# Every push is built and tested on a real Mac and a real Windows PC.
+# On main, if the version in the VERSION file hasn't been released yet, both apps are
+# published together as one GitHub release, and every installed copy picks it up within
+# about 12 hours. If either build or launch test fails, nothing is released.
 
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -15,17 +14,17 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  mac:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the app
-        run: ./build.sh "$(tr -d '[:space:]' < VERSION)" "$GITHUB_RUN_NUMBER"
+      - name: Build the Mac app
+        run: ./mac/build.sh "$(tr -d '[:space:]' < VERSION)" "$GITHUB_RUN_NUMBER"
 
-      - name: Check that the app starts and keeps running
+      - name: Check that the Mac app starts and keeps running
         run: |
-          "dist/Claude Usage.app/Contents/MacOS/ClaudeUsage" &
+          "dist/mac/Claude Usage.app/Contents/MacOS/ClaudeUsage" &
           PID=$!
           sleep 10
           if ! kill -0 "$PID" 2>/dev/null; then
@@ -37,11 +36,60 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ClaudeUsage
-          path: dist/ClaudeUsage.zip
+          name: mac
+          path: dist/mac/ClaudeUsage.zip
 
-      - name: Publish the release (only for a new version on main)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build the Windows app
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          dotnet publish windows/ClaudeUsage/ClaudeUsage.csproj -c Release -p:Version=$version -o dist/windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item dist/windows/ClaudeUsage.exe dist/windows/ClaudeUsage-Windows.exe
+          Get-Item dist/windows/ClaudeUsage-Windows.exe | Format-List Name, Length
+
+      - name: Check that the Windows app starts and keeps running
+        shell: pwsh
+        run: |
+          $env:CLAUDE_USAGE_SELFTEST = "1"
+          $p = Start-Process dist/windows/ClaudeUsage-Windows.exe -PassThru
+          Start-Sleep -Seconds 20
+          $log = Join-Path $env:LOCALAPPDATA "ClaudeUsage\errors.log"
+          if (Test-Path $log) { Get-Content $log }
+          if ($p.HasExited) {
+            Write-Host "The app quit or crashed right after starting (exit code $($p.ExitCode))."
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "The app started, drew its panel and menu, and kept running."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/windows/ClaudeUsage-Windows.exe
+
+  release:
+    needs: [mac, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release (only for a new version)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -49,7 +97,7 @@ jobs:
           if gh release view "v$VERSION" >/dev/null 2>&1; then
             echo "v$VERSION is already released; nothing to publish."
           else
-            gh release create "v$VERSION" dist/ClaudeUsage.zip \
+            gh release create "v$VERSION" dist/ClaudeUsage.zip dist/ClaudeUsage-Windows.exe \
               --title "Claude Usage $VERSION" \
               --notes "$(git log -1 --pretty=%B)"
           fi
